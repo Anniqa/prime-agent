@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" width="320" height="220">
+  <defs>
+    <linearGradient id="card_grad_repl" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e2538" />
+      <stop offset="100%" stop-color="#111624" />
+    </linearGradient>
+  </defs>
+  <!-- Card Base -->
+  <rect x="2" y="2" width="316" height="216" rx="20" fill="url(#card_grad_repl)" stroke="#2b344e" stroke-width="2" />
+  <!-- Top Badge -->
+  <rect x="24" y="22" width="130" height="26" rx="13" fill="#a78bfa" fill-opacity="0.2" stroke="#a78bfa" stroke-width="1.5" />
+  <text x="89" y="39" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="700" fill="#a78bfa" text-anchor="middle">RECURSIVE AI</text>
+  <!-- Title -->
+  <text x="24" y="80" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800" fill="#ffffff">Persistent REPL</text>
+  <!-- Description list -->
+  <circle cx="28" cy="115" r="3" fill="#a78bfa" />
+  <text x="38" y="119" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#cbd5e1">Prompt-as-a-Variable Workflow</text>
+  <circle cx="28" cy="147" r="3" fill="#a78bfa" />
+  <text x="38" y="151" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#cbd5e1">Exa AI Fast Search Integration</text>
+  <circle cx="28" cy="179" r="3" fill="#a78bfa" />
+  <text x="38" y="183" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#cbd5e1">Fail-Safe MCP Host Client Bridge</text>
+</svg>

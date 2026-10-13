@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" width="320" height="220">
+  <defs>
+    <linearGradient id="card_grad_termux" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e2538" />
+      <stop offset="100%" stop-color="#111624" />
+    </linearGradient>
+  </defs>
+  <!-- Card Base -->
+  <rect x="2" y="2" width="316" height="216" rx="20" fill="url(#card_grad_termux)" stroke="#2b344e" stroke-width="2" />
+  <!-- Top Badge -->
+  <rect x="24" y="22" width="130" height="26" rx="13" fill="#ff8ab4" fill-opacity="0.2" stroke="#ff8ab4" stroke-width="1.5" />
+  <text x="89" y="39" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="700" fill="#ff8ab4" text-anchor="middle">TERMUX NATIVE</text>
+  <!-- Title -->
+  <text x="24" y="80" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800" fill="#ffffff">Android 100% Ready</text>
+  <!-- Description list -->
+  <circle cx="28" cy="115" r="3" fill="#ff8ab4" />
+  <text x="38" y="119" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#cbd5e1">Patched Glibc Loader &amp; RPath</text>
+  <circle cx="28" cy="147" r="3" fill="#ff8ab4" />
+  <text x="38" y="151" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#cbd5e1">Daemon Socket &amp; Multi-Worker</text>
+  <circle cx="28" cy="179" r="3" fill="#ff8ab4" />
+  <text x="38" y="183" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#cbd5e1">Zero Crash / Anti Bionic Conflict</text>
+</svg>

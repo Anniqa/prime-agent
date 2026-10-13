@@ -1,0 +1,204 @@
+name: Build & Release Prime Agent (Universal)
+
+# Builds the universal release set on GitHub runners:
+#   prime-agent-linux-arm64.tar.gz  (aarch64, Termux/Android + ARM Linux)
+#   prime-agent-linux-x64.tar.gz    (x86_64 Linux)
+# plus SHA256SUMS.txt. install.sh picks the asset matching the host arch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v0.10.0-antigravity.2)'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          set -e
+          VERSION=""
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${{ github.ref_name }}"
+          fi
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ github.event.inputs.tag_name }}"
+          fi
+          if [ -z "$VERSION" ]; then
+            VERSION="v$(grep -m1 '^version =' Cargo.toml | awk -F'"' '{print $2}')"
+          fi
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $VERSION"
+
+  build:
+    name: Package ${{ matrix.platform }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            platform: linux-arm64
+            apt: gcc-aarch64-linux-gnu
+            strip: aarch64-linux-gnu-strip
+          - target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+            apt: ''
+            strip: strip
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Install cross compiler
+        if: matrix.apt != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.platform }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.platform }}-cargo-
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: gcc
+        run: cargo build --release --target ${{ matrix.target }} --bin prime-agent
+
+      - name: Generate catalog fixtures
+        run: |
+          mkdir -p catalog-assets
+          python3 scripts/release/bundle_catalog.py generate --network --out catalog-assets || \
+          python3 scripts/release/bundle_catalog.py generate --fixture --out catalog-assets || true
+          ls -la catalog-assets || true
+
+      - name: Package archive
+        run: |
+          set -e
+          TAG="${{ needs.resolve.outputs.tag }}"
+          PKG_NAME="prime-agent-${{ matrix.platform }}"
+          DIST_DIR="dist/$PKG_NAME"
+          mkdir -p "$DIST_DIR"
+
+          # 1. Binary (stripped)
+          cp "target/${{ matrix.target }}/release/prime-agent" "$DIST_DIR/prime-agent"
+          ${{ matrix.strip }} "$DIST_DIR/prime-agent"
+          chmod 755 "$DIST_DIR/prime-agent"
+
+          # 2. Runtime assets
+          for d in prime-agent-runtime skills docs; do
+            [ -d "$d" ] && cp -r "$d" "$DIST_DIR/"
+          done
+          for f in catalog-assets/models.bundled.json catalog-assets/mcp-services.bundled.json README.md LICENSE; do
+            [ -f "$f" ] && cp "$f" "$DIST_DIR/"
+          done
+
+          # 3. Version manifest
+          cat > "$DIST_DIR/package.json" <<EOF
+          {"name":"@primeintellect/prime-agent","version":"${TAG#v}"}
+          EOF
+
+          # 4. Tarball
+          tar -czf "${PKG_NAME}.tar.gz" -C dist "$PKG_NAME"
+          ls -lh "${PKG_NAME}.tar.gz"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: prime-agent-${{ matrix.platform }}
+          path: prime-agent-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish release ${{ needs.resolve.outputs.tag }}
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: prime-agent-*
+          path: release-files
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -e
+          cd release-files
+          ls -lh
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -e
+          cat > notes.md <<'EOF'
+          ### Prime Agent (Native Google Antigravity Edition)
+
+          **Universal assets:**
+          - `prime-agent-linux-arm64.tar.gz` — Android Termux (aarch64) & ARM Linux
+          - `prime-agent-linux-x64.tar.gz` — x86_64 Linux
+
+          **Highlights**
+          - Native Google Antigravity provider (CloudCode PA SSE streaming, 1.0M context).
+          - Native OAuth 2.0 loopback & terminal flow (port 51121).
+          - Persistent glibc Python REPL kernel.
+          - `google_search` (grounding) and `generate_image` tools, with multi-account
+            quota failover across the stored Antigravity accounts.
+          - Termux/Android ready (glibc loader patched at install time).
+
+          **Install (one line):**
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/Anniqa/prime-agent/main/install.sh | bash
+          ```
+          EOF
+
+          cd release-files
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; uploading assets..."
+            gh release upload "$TAG" ./* --clobber
+          else
+            echo "Creating release $TAG..."
+            gh release create "$TAG" ./* \
+              --title "Prime Agent $TAG" \
+              --notes-file ../notes.md
+          fi
