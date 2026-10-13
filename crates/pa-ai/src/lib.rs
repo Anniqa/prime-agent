@@ -23,6 +23,10 @@ mod prime_inference_differential_test;
 
 pub use event_stream::{AssistantMessageEventExt, AssistantMessageEventStream};
 pub use providers::faux;
+pub use providers::antigravity_image;
+pub use providers::antigravity_types;
+pub use providers::antigravity_models;
+pub use providers::antigravity_search;
 
 /// Codex WebSocket session debugging and cleanup surface (TS
 /// `getOpenAICodexWebSocketDebugStats` and its reset/close siblings).

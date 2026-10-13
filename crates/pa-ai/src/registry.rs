@@ -110,6 +110,7 @@ pub fn register_builtin_api_providers() {
     let mut registry = registry().write().unwrap();
     // Each entry mirrors the corresponding import in `providers/register-builtins.ts`.
     let builtins: Vec<Arc<dyn Provider>> = vec![
+        Arc::new(crate::providers::antigravity::AntigravityProvider),
         Arc::new(crate::providers::anthropic::AnthropicMessagesProvider),
         Arc::new(crate::providers::openai_completions::OpenAICompletionsProvider),
         Arc::new(crate::providers::openai_responses::OpenAIResponsesProvider),

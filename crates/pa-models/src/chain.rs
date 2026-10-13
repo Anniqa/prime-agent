@@ -163,7 +163,7 @@ impl ModelCatalog {
     /// the live Prime Inference snapshot for `credentials` when given.
     /// Never fails; never blocks on the network.
     pub fn resolve(&self, credentials: Option<&PrimeCredentials>) -> Vec<Model> {
-        let base = match self.provider_cache.get(PUBLIC_SCOPE) {
+        let mut base = match self.provider_cache.get(PUBLIC_SCOPE) {
             Some(remote) => {
                 // Step 1: validated last-good cache + the compiled offline
                 // Prime Inference entries (private/live entries come from
@@ -185,6 +185,17 @@ impl ModelCatalog {
                 None => self.compiled.as_ref().clone(),
             },
         };
+        // The Antigravity provider ships with this build, so its models are merged into every
+        // catalog source (the validated remote cache and the packaged snapshot never carry them).
+        for model in transports::compiled_antigravity_entries() {
+            if base
+                .iter()
+                .any(|existing| existing.id == model.id && existing.provider == model.provider)
+            {
+                continue;
+            }
+            base.push(model);
+        }
         let live = credentials
             .and_then(|credentials| self.prime_inference.get(&credentials.as_inference()));
         match live {

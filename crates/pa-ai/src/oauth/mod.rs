@@ -5,6 +5,8 @@
 
 mod anthropic;
 mod anthropic_callback;
+mod antigravity;
+mod antigravity_accounts;
 mod callback;
 mod github_copilot;
 mod openai_codex;
@@ -16,6 +18,16 @@ mod xai;
 pub use anthropic::{
     login_anthropic, refresh_anthropic_token, AnthropicCredentials,
     LOGIN_CANCELLED as ANTHROPIC_LOGIN_CANCELLED,
+};
+pub use antigravity::{
+    default_project_id, load_code_assist, login_antigravity, refresh_antigravity_token,
+    resolve_project_id, stable_project_id, AntigravityCredentials,
+    LOGIN_CANCELLED as ANTIGRAVITY_LOGIN_CANCELLED,
+};
+pub use antigravity_accounts::{
+    activate_account, failover_to_next_account, list_accounts, load_account_store,
+    remember_account, remove_account, sync_current_auth, update_remembered_account, AccountApiKey,
+    AccountCredentials, AccountError, AccountStore, AccountSummary, StoredAccount,
 };
 pub use callback::CodexCallbackServer;
 pub use github_copilot::{

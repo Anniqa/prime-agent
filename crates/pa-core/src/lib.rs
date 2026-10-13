@@ -54,6 +54,23 @@ pub use tools::ipython::{
     LateSentAgentMessageHandler,
 };
 pub use tools::rlm_bootstrap::{build_rlm_bootstrap_code, PythonSkillRuntimeInfo};
+pub use tools::antigravity_agent_tools;
+
+// Antigravity image tool: the optional `generate_image` definition. The
+// definition is built on pa-ai's ported image module; host wiring
+// (daemon/CLI) registers it in the session tool set.
+pub use tools::antigravity_image_tool::{
+    antigravity_image_tool, antigravity_image_tool_with_context, is_image_tool_enabled,
+    AntigravityImageToolContext,
+};
+
+// Antigravity search tool: the optional `google_search` definition. Built on
+// pa-ai's ported search module; host wiring (daemon/CLI) registers it in the
+// session tool set.
+pub use tools::antigravity_search_tool::{
+    antigravity_search_tool, antigravity_search_tool_with_context, is_search_tool_enabled,
+    AntigravitySearchToolContext,
+};
 // RLM kernel subsystem: persistent IPython kernel lifecycle.
 pub mod agent_traces;
 pub mod auth;

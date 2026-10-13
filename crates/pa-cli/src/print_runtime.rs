@@ -1178,8 +1178,8 @@ pub(crate) fn render_selector_error(error: &SessionSelectorError) -> String {
 
 /// Model tools for the print runtime: `python_repl` only — the engine adds the kernel-backed tool
 /// itself.
-fn builtin_tools(_cwd: &std::path::Path) -> Vec<Arc<dyn pa_agent::types::AgentTool>> {
-    Vec::new()
+fn builtin_tools(cwd: &std::path::Path) -> Vec<Arc<dyn pa_agent::types::AgentTool>> {
+    pa_core::antigravity_agent_tools(Some(cwd), None)
 }
 
 /// Admit prompts, stream json events when requested, and decide the exit code

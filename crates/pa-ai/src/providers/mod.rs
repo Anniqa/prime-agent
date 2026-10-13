@@ -1,5 +1,13 @@
 //! Streaming provider implementations ported from `packages/ai/src/providers`.
 
+pub mod antigravity;
+pub mod antigravity_models;
+pub mod antigravity_usage;
+pub mod antigravity_types;
+pub mod antigravity_search;
+pub mod antigravity_image;
+pub mod antigravity_grouping;
+pub mod antigravity_discovery;
 pub mod anthropic;
 pub mod azure_openai_responses;
 pub mod bedrock;

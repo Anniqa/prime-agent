@@ -962,6 +962,10 @@ impl AgentSessionEngine {
             .lock()
             .expect("late agent message sink lock")
             .clone();
+        let session_tools = pa_core::antigravity_agent_tools(
+            Some(cwd.as_path()),
+            Some(self.config.agent_dir.as_path()),
+        );
         pa_core::session_engine::engine::create_session(SessionEngineConfig {
             on_late_sent_agent_message,
             semantic_edges,
@@ -975,8 +979,10 @@ impl AgentSessionEngine {
             model: Some(agent_model),
             thinking_level: Some(map_thinking_level(self.effective_thinking())),
             stream_fn: Some(stream_fn),
-            // Model tools: `python_repl` only; the engine adds the kernel-backed `python_repl` tool itself.
-            tools: vec![],
+            // Model tools: the optional Antigravity tools (`google_search`, `generate_image`,
+            // gated by the extension's extra-tool toggles); the engine adds the kernel-backed
+            // `python_repl` tool itself.
+            tools: session_tools,
             custom_system_prompt: create_resources.system_prompt,
             prompt_guidelines: create_resources.append_system_prompt,
             generic_mcp_servers: vec![],

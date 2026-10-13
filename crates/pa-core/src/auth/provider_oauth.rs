@@ -5,8 +5,9 @@
 use std::sync::Arc;
 
 use pa_ai::oauth::{
-    refresh_anthropic_token, refresh_github_copilot_token, refresh_openai_codex_token,
-    refresh_xai_token, CodexHttp, ProviderHttp, ReqwestCodexHttp, ReqwestProviderHttp,
+    refresh_anthropic_token, refresh_antigravity_token, refresh_github_copilot_token,
+    refresh_openai_codex_token, refresh_xai_token, CodexHttp, ProviderHttp, ReqwestCodexHttp,
+    ReqwestProviderHttp,
 };
 
 use crate::auth::types::{AuthCredential, AuthStorageData};
@@ -19,6 +20,7 @@ pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 pub const GITHUB_COPILOT_PROVIDER_ID: &str = "github-copilot";
 /// The xAI (Grok) subscription provider id.
 pub const XAI_PROVIDER_ID: &str = "xai";
+pub const ANTIGRAVITY_PROVIDER_ID: &str = "antigravity";
 
 /// The AI library's oauth registry as the auth storage's default
 /// integration.
@@ -95,6 +97,27 @@ impl ProviderOAuth {
                             refresh: Some(credentials.refresh),
                             expires: credentials.expires,
                             account_id: Some(credentials.account_id),
+                            enterprise_url: None,
+                            endpoint: None,
+                            token_endpoint: None,
+                            client_id: None,
+                            resource: None,
+                            issuer: None,
+                            audience_mode: None,
+                        })
+                    }
+                    ANTIGRAVITY_PROVIDER_ID => {
+                        let credentials = runtime
+                            .block_on(refresh_antigravity_token(
+                                provider_http.as_ref(),
+                                &refresh_token,
+                            ))
+                            .ok()?;
+                        Some(AuthCredential::Oauth {
+                            access: credentials.access,
+                            refresh: Some(credentials.refresh),
+                            expires: credentials.expires,
+                            account_id: credentials.account_id,
                             enterprise_url: None,
                             endpoint: None,
                             token_endpoint: None,
@@ -194,6 +217,7 @@ impl crate::auth::OAuthIntegration for ProviderOAuth {
                 | ANTHROPIC_PROVIDER_ID
                 | GITHUB_COPILOT_PROVIDER_ID
                 | XAI_PROVIDER_ID
+                | ANTIGRAVITY_PROVIDER_ID
         ) {
             return None;
         }

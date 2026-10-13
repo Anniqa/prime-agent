@@ -128,13 +128,15 @@ pub const PRIME_INFERENCE_DEFAULT_MODEL_ID: &str = "z-ai/glm-5.3";
 pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai-codex";
 
 /// The other subscription providers' ids (the same wire identifiers, carried the same way).
+pub const ANTIGRAVITY_PROVIDER_ID: &str = "antigravity";
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 pub const GITHUB_COPILOT_PROVIDER_ID: &str = "github-copilot";
 pub const XAI_PROVIDER_ID: &str = "xai";
 
 /// The subscription rows whose logins run on the panel; every flow checks the cooperative cancel
 /// flag.
-pub const SUBSCRIPTION_PROVIDER_IDS: [&str; 4] = [
+pub const SUBSCRIPTION_PROVIDER_IDS: [&str; 5] = [
+    ANTIGRAVITY_PROVIDER_ID,
     ANTHROPIC_PROVIDER_ID,
     GITHUB_COPILOT_PROVIDER_ID,
     OPENAI_CODEX_PROVIDER_ID,

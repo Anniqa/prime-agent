@@ -48,6 +48,21 @@ pub fn compiled_transport_tuples() -> Vec<(&'static str, &'static str, &'static 
     tuples
 }
 
+/// The provider id the Antigravity port serves.
+pub const ANTIGRAVITY_PROVIDER: &str = "antigravity";
+
+/// The compiled Antigravity entries. Neither catalog source carries them (the provider ships
+/// with this build, not with the packaged snapshot), so the chain merges them in the same way
+/// the compiled offline Prime Inference entries are merged.
+#[must_use]
+pub fn compiled_antigravity_entries() -> Vec<Model> {
+    compiled_models()
+        .iter()
+        .filter(|model| model.provider == ANTIGRAVITY_PROVIDER)
+        .cloned()
+        .collect()
+}
+
 /// The compiled offline Prime Inference entries (the onboarding fallback
 /// before the first credentialed fetch). Private ids (internal/, dev/, ids
 /// containing `:`) never ship compiled.

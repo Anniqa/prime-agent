@@ -16,7 +16,8 @@ use pa_tui::provider_auth::{
 };
 
 /// The subscription login providers (every flow ported).
-const SUBSCRIPTION_PROVIDERS: [(&str, &str); 4] = [
+const SUBSCRIPTION_PROVIDERS: [(&str, &str); 5] = [
+    ("antigravity", "Google Antigravity"),
     ("anthropic", "Anthropic (Claude Pro/Max)"),
     ("github-copilot", "GitHub Copilot"),
     ("openai-codex", "ChatGPT Plus/Pro (Codex Subscription)"),
@@ -515,6 +516,31 @@ fn login_blocking_on_panel(
         } else {
             ProviderAuthOutcome::Status(outcome)
         };
+    }
+    // The Antigravity login.
+    if provider_row.id == pa_core::auth::ANTIGRAVITY_PROVIDER_ID {
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_or_else(
+                |error: std::io::Error| {
+                    ProviderAuthOutcome::Error(format!(
+                        "Failed to login to {}: {error}",
+                        provider_row.name
+                    ))
+                },
+                |runtime| {
+                    runtime.block_on(crate::subscription_login::run_antigravity_login(
+                        &agent_dir,
+                        &provider_row.name,
+                        &pa_ai::oauth::ReqwestProviderHttp::new(),
+                        &crate::subscription_login::PanelSubscriptionLoginUi::new(
+                            panel,
+                            &provider_row.id,
+                        ),
+                    ))
+                },
+            );
     }
     // The Prime Inference login.
     if provider_row.id == PRIME_INFERENCE_PROVIDER_ID {
