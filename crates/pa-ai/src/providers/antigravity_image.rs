@@ -103,8 +103,9 @@ pub fn assert_safe_image_model(model_id: &str) -> Result<String, String> {
     if id.is_empty() || id.chars().count() > 80 {
         return Err("Unsupported image model id.".to_string());
     }
-    let pattern = regex::Regex::new(r"(?i)^(gemini-[a-z0-9.+-]*image[a-z0-9.+-]*|imagen-[a-z0-9.+-]+)$")
-        .map_err(|error| error.to_string())?;
+    let pattern =
+        regex::Regex::new(r"(?i)^(gemini-[a-z0-9.+-]*image[a-z0-9.+-]*|imagen-[a-z0-9.+-]+)$")
+            .map_err(|error| error.to_string())?;
     if !pattern.is_match(id) {
         return Err(format!("Unsupported image model: {id}"));
     }
@@ -242,7 +243,7 @@ pub fn resolve_image_save_path(
     if target.extension().is_none() {
         return Ok(target.join(&default_name).to_string_lossy().to_string());
     }
-    if index.is_none() {
+    if requested.is_none() || index.is_none() {
         return Ok(target.to_string_lossy().to_string());
     }
     let target_text = target.to_string_lossy().to_string();
@@ -315,7 +316,10 @@ fn collect_images_from_parts(
             }
         }
         let inline = part.get("inlineData");
-        if let Some(data) = inline.and_then(|inline| inline.get("data")).and_then(Value::as_str) {
+        if let Some(data) = inline
+            .and_then(|inline| inline.get("data"))
+            .and_then(Value::as_str)
+        {
             if !data.is_empty() {
                 let mime_type = inline
                     .and_then(|inline| inline.get("mimeType"))
@@ -358,6 +362,14 @@ impl ImageSseParser {
         Ok(())
     }
 
+    pub fn finish(&mut self) -> Result<(), String> {
+        let remainder = std::mem::take(&mut self.buffer);
+        if !remainder.is_empty() {
+            self.process_line(&remainder)?;
+        }
+        Ok(())
+    }
+
     fn process_line(&mut self, line: &str) -> Result<(), String> {
         let Some(payload) = line.strip_prefix("data:") else {
             return Ok(());
@@ -394,11 +406,14 @@ impl ImageSseParser {
 }
 
 /// Parse a full SSE body (the buffered transport seam's counterpart to `collectImagesFromSse`).
-pub fn collect_images_from_sse(chunks: &[&str]) -> Result<(Vec<GeneratedImage>, Vec<String>), String> {
+pub fn collect_images_from_sse(
+    chunks: &[&str],
+) -> Result<(Vec<GeneratedImage>, Vec<String>), String> {
     let mut parser = ImageSseParser::new();
     for chunk in chunks {
         parser.push(chunk)?;
     }
+    parser.finish()?;
     Ok((parser.images, parser.text))
 }
 
@@ -482,7 +497,8 @@ pub async fn generate_antigravity_image_content(
     }
 
     let aspect_ratio = assert_safe_aspect_ratio(options.aspect_ratio.as_deref().unwrap_or("1:1"))?;
-    let preferred = assert_safe_image_model(options.model.as_deref().unwrap_or(DEFAULT_IMAGE_MODEL))?;
+    let preferred =
+        assert_safe_image_model(options.model.as_deref().unwrap_or(DEFAULT_IMAGE_MODEL))?;
     let mut models = vec![preferred.clone()];
     for model in IMAGE_MODEL_FALLBACKS {
         if *model != preferred {
@@ -525,18 +541,18 @@ pub async fn generate_antigravity_image_content(
             match result {
                 Ok((response, streaming)) => {
                     if !response.ok() {
-                        last_error = take_chars(&json_or_text_error(&response.text()), 400);
+                        let body_error = take_chars(&json_or_text_error(&response.text()), 400);
                         if response.status == 404
                             || [403, 429, 500, 502, 503, 504].contains(&response.status)
                         {
+                            last_error = format!("HTTP {}: {}", response.status, body_error);
                             continue;
                         }
-                        last_error = format!(
+                        return Err(format!(
                             "Antigravity image request failed ({}): {}",
                             response.status,
-                            safe_error(&last_error)
-                        );
-                        continue;
+                            safe_error(&body_error)
+                        ));
                     }
 
                     let body_text = response.text();
@@ -821,7 +837,10 @@ pub async fn generate_antigravity_images(
             model: model.id.clone(),
             output: Vec::new(),
             timestamp: crate::utils_inner::diagnostics::now_ms(),
-            stop_reason: if aborted || options.and_then(|options| options.signal.as_ref()).is_some_and(CancellationToken::is_cancelled)
+            stop_reason: if aborted
+                || options
+                    .and_then(|options| options.signal.as_ref())
+                    .is_some_and(CancellationToken::is_cancelled)
             {
                 "aborted"
             } else {
@@ -964,7 +983,11 @@ mod tests {
             body: Vec<u8>,
             _signal: Option<CancellationToken>,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<AntigravityHttpResponse, String>> + Send + 'a>,
+            Box<
+                dyn std::future::Future<Output = Result<AntigravityHttpResponse, String>>
+                    + Send
+                    + 'a,
+            >,
         > {
             self.calls.lock().unwrap().push(url.to_string());
             self.bodies.lock().unwrap().push(body);
@@ -984,7 +1007,9 @@ mod tests {
 
     #[test]
     fn parses_image_command_args() {
-        let parsed = parse_image_command_args("--ratio 16:9 --model gemini-3-pro-image a sunset over mountains");
+        let parsed = parse_image_command_args(
+            "--ratio 16:9 --model gemini-3-pro-image a sunset over mountains",
+        );
         assert_eq!(parsed.prompt, "a sunset over mountains");
         assert_eq!(parsed.aspect_ratio.as_deref(), Some("16:9"));
         assert_eq!(parsed.model.as_deref(), Some("gemini-3-pro-image"));
@@ -1018,11 +1043,23 @@ mod tests {
 
     #[test]
     fn builds_the_image_request() {
-        let request = build_image_generate_request("a lighthouse", "gemini-3-pro-image", "proj-1", "16:9", &[]);
+        let request = build_image_generate_request(
+            "a lighthouse",
+            "gemini-3-pro-image",
+            "proj-1",
+            "16:9",
+            &[],
+        );
         assert_eq!(request["model"], "gemini-3-pro-image");
         assert_eq!(request["project"], "proj-1");
-        assert_eq!(request["request"]["generationConfig"]["imageConfig"]["aspectRatio"], "16:9");
-        assert_eq!(request["request"]["contents"][0]["parts"][0]["text"], "a lighthouse");
+        assert_eq!(
+            request["request"]["generationConfig"]["imageConfig"]["aspectRatio"],
+            "16:9"
+        );
+        assert_eq!(
+            request["request"]["contents"][0]["parts"][0]["text"],
+            "a lighthouse"
+        );
         assert_eq!(DEFAULT_IMAGE_MODEL, "gemini-3.1-flash-image");
         assert_eq!(request["requestType"], "image_gen");
         assert!(request["request"].get("systemInstruction").is_none());
@@ -1099,8 +1136,10 @@ mod tests {
             expected
         );
         assert_eq!(
-            parse_image_response(&json!({ "candidates": [{ "content": { "parts": [{ "text": "no image" }] } }] }))
-                .unwrap(),
+            parse_image_response(
+                &json!({ "candidates": [{ "content": { "parts": [{ "text": "no image" }] } }] })
+            )
+            .unwrap(),
             (Vec::new(), vec!["no image".to_string()])
         );
     }
@@ -1110,8 +1149,12 @@ mod tests {
         let png = base64::engine::general_purpose::STANDARD.encode([0x89, 0x50, 0x4e, 0x47]);
         let body = format!(
             "{}{}{}",
-            sse(&json!({ "response": { "candidates": [{ "content": { "parts": [{ "text": "ok" }] } }] } })),
-            sse(&json!({ "response": { "candidates": [{ "content": { "parts": [{ "inlineData": { "mimeType": "image/png", "data": png } }] } }] } })),
+            sse(
+                &json!({ "response": { "candidates": [{ "content": { "parts": [{ "text": "ok" }] } }] } })
+            ),
+            sse(
+                &json!({ "response": { "candidates": [{ "content": { "parts": [{ "inlineData": { "mimeType": "image/png", "data": png } }] } }] } })
+            ),
             "data: [DONE]\n",
         );
         let bytes = body.as_bytes();
@@ -1139,11 +1182,94 @@ mod tests {
         let images_dir = tmp.join("images").to_string_lossy().to_string();
         assert!(dir_saved.starts_with(&images_dir));
 
-        assert!(resolve_image_save_path(&root, Some("../escape.png"), "image/png", None)
-            .unwrap_err()
-            .contains("inside the working directory"));
+        let default_multi = resolve_image_save_path(&root, None, "image/png", Some(0)).unwrap();
+        assert!(
+            default_multi.ends_with("-1.png"),
+            "default multi {default_multi}"
+        );
+        assert!(
+            !default_multi.ends_with("-1-1.png"),
+            "must not double suffix: {default_multi}"
+        );
+        let default_multi_2 = resolve_image_save_path(&root, None, "image/png", Some(1)).unwrap();
+        assert!(
+            default_multi_2.ends_with("-2.png"),
+            "default multi 2 {default_multi_2}"
+        );
+
+        assert!(
+            resolve_image_save_path(&root, Some("../escape.png"), "image/png", None)
+                .unwrap_err()
+                .contains("inside the working directory")
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn sse_parser_finish_handles_unterminated_trailing_chunk() {
+        let png = base64::engine::general_purpose::STANDARD.encode([0x89, 0x50, 0x4e, 0x47]);
+        let payload = format!(
+            "data: {}",
+            json!({
+                "response": {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{
+                                "inlineData": {
+                                    "data": png,
+                                    "mimeType": "image/png"
+                                }
+                            }]
+                        }
+                    }]
+                }
+            })
+        );
+        let (images, _text) = collect_images_from_sse(&[&payload]).unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].data, png);
+    }
+
+    #[tokio::test]
+    async fn request_fails_fast_on_client_error_and_retries_transient() {
+        let http_400 = ScriptedHttp::new(vec![ScriptedHttp::status(400, "bad prompt argument")]);
+        let result_400 = generate_antigravity_image_content(
+            &GenerateImageOptions {
+                api_key: r#"{"token":"tok","projectId":"proj"}"#.to_string(),
+                prompt: "a cat".to_string(),
+                ..GenerateImageOptions::default()
+            },
+            &http_400,
+        )
+        .await;
+        assert!(result_400.is_err());
+        let err = result_400.unwrap_err();
+        assert!(err.contains("Antigravity image request failed (400)"));
+        assert_eq!(http_400.calls().len(), 1);
+
+        // Every model x endpoint attempt retries transiently; script enough 429s to
+        // cover the full matrix so the final error keeps the HTTP status.
+        let http_429 = ScriptedHttp::new(
+            std::iter::repeat_with(|| ScriptedHttp::status(429, "quota exceeded"))
+                .take(12)
+                .collect(),
+        );
+        let result_429 = generate_antigravity_image_content(
+            &GenerateImageOptions {
+                api_key: r#"{"token":"tok","projectId":"proj"}"#.to_string(),
+                prompt: "a cat".to_string(),
+                ..GenerateImageOptions::default()
+            },
+            &http_429,
+        )
+        .await;
+        assert!(result_429.is_err());
+        let err_429 = result_429.unwrap_err();
+        assert!(
+            err_429.contains("HTTP 429"),
+            "expected HTTP 429 in error: {err_429}"
+        );
     }
 
     #[tokio::test]
@@ -1157,7 +1283,8 @@ mod tests {
             input: vec![ImageInput::Text("a square".to_string())],
         };
 
-        let no_key = generate_antigravity_images(&model, &context, None, &ScriptedHttp::new(vec![])).await;
+        let no_key =
+            generate_antigravity_images(&model, &context, None, &ScriptedHttp::new(vec![])).await;
         assert_eq!(no_key.stop_reason, "error");
 
         let bad_key = generate_antigravity_images(
@@ -1234,7 +1361,10 @@ mod tests {
 
         let body: Value = serde_json::from_slice(&http.bodies()[0]).unwrap();
         assert_eq!(body["model"], DEFAULT_IMAGE_MODEL);
-        assert_eq!(body["request"]["generationConfig"]["imageConfig"]["aspectRatio"], "16:9");
+        assert_eq!(
+            body["request"]["generationConfig"]["imageConfig"]["aspectRatio"],
+            "16:9"
+        );
         assert_eq!(
             body["request"]["contents"][0]["parts"][1],
             json!({ "inlineData": { "data": "AQID", "mimeType": "image/png" } })

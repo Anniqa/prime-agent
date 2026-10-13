@@ -12,13 +12,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pa_ai::oauth::{default_project_id, resolve_project_id, ReqwestProviderHttp};
 use pa_ai::antigravity_search::{
     execute_antigravity_search, google_search_tool_enabled, google_search_tool_parameters,
     ExecuteSearchOptions, GOOGLE_SEARCH_TOOL_DESCRIPTION, GOOGLE_SEARCH_TOOL_LABEL,
     GOOGLE_SEARCH_TOOL_NAME, GOOGLE_SEARCH_TOOL_PROMPT_SNIPPET,
 };
 use pa_ai::antigravity_types::{safe_error, AntigravityHttp, ReqwestAntigravityHttp};
+use pa_ai::oauth::{
+    default_project_id, failover_to_next_account_with_dir, resolve_project_id, ReqwestProviderHttp,
+};
 use serde_json::{json, Value};
 
 use crate::auth::{AuthStorage, ANTIGRAVITY_PROVIDER_ID};
@@ -95,32 +97,77 @@ async fn execute_google_search(
     signal: Option<AbortSignal>,
     on_update: Option<OnUpdate>,
 ) -> anyhow::Result<ToolExecutionResult> {
-    let Some(api_key) = resolve_search_api_key(&context).await? else {
+    let api_key = resolve_search_api_key(&context).await?;
+    let Some(api_key) = api_key.filter(|key| !key.trim().is_empty()) else {
         anyhow::bail!("No Antigravity credentials. Run /login antigravity first.");
     };
 
-    let options = ExecuteSearchOptions {
-        api_key: Some(api_key),
-        query: string_param(&params, "query").unwrap_or_default(),
-        instruction: string_param(&params, "instruction"),
-        urls: string_list_param(&params, "urls"),
-        thinking: bool_param(&params, "thinking"),
-        signal,
-    };
-
+    let query = string_param(&params, "query").unwrap_or_default();
     if let Some(on_update) = on_update {
         on_update(ToolUpdate {
             content: vec![ToolContentBlock::text(format!(
                 "Searching Google for: \"{}\"\u{2026}",
-                options.query.trim()
+                query.trim()
             ))],
             details: Some(json!({})),
         });
     }
 
-    let text = execute_antigravity_search(&options, context.http.as_ref())
-        .await
-        .map_err(|error| anyhow::anyhow!(safe_error(&error)))?;
+    let mut current_api_key = api_key;
+    let mut tried_tokens: Vec<String> = Vec::new();
+    if let Ok(value) = serde_json::from_str::<Value>(&current_api_key) {
+        if let Some(token) = credential_token(&value) {
+            tried_tokens.push(token);
+        }
+    }
+
+    let text = loop {
+        let options = ExecuteSearchOptions {
+            api_key: Some(current_api_key.clone()),
+            query: query.clone(),
+            instruction: string_param(&params, "instruction"),
+            urls: string_list_param(&params, "urls"),
+            thinking: bool_param(&params, "thinking"),
+            signal: signal.clone(),
+        };
+
+        match execute_antigravity_search(&options, context.http.as_ref()).await {
+            Ok(text) => break text,
+            Err(error) => {
+                if is_search_quota_exhausted(&error) {
+                    let provider_http = ReqwestProviderHttp::new();
+                    if let Some(next) = failover_to_next_account_with_dir(
+                        &provider_http,
+                        context.agent_dir.as_deref(),
+                        &tried_tokens,
+                    )
+                    .await
+                    {
+                        tried_tokens.push(next.token.clone());
+                        let project = match next.project_id {
+                            Some(project) => project,
+                            None => resolve_project_id(&provider_http, &next.token)
+                                .await
+                                .unwrap_or_else(|| {
+                                    default_project_id(
+                                        next.email.as_deref().unwrap_or("antigravity-default"),
+                                    )
+                                }),
+                        };
+                        current_api_key =
+                            json!({ "token": next.token, "projectId": project }).to_string();
+                        continue;
+                    }
+                    anyhow::bail!(
+                        "Antigravity search quota exhausted for all accounts: {}",
+                        safe_error(&error)
+                    );
+                }
+                anyhow::bail!("{}", safe_error(&error));
+            }
+        }
+    };
+
     Ok(ToolExecutionResult::text(text))
 }
 
@@ -162,6 +209,9 @@ async fn resolve_search_api_key(
         }
     }
     if raw.is_none() {
+        raw = entry.as_ref().and_then(credential_token);
+    }
+    if raw.is_none() {
         raw = pa_ai::env_api_keys::get_env_api_key(ANTIGRAVITY_PROVIDER_ID);
     }
 
@@ -173,6 +223,10 @@ async fn resolve_search_api_key(
     }
 
     let token = raw.trim().to_string();
+    let token = serde_json::from_str::<serde_json::Value>(&token)
+        .ok()
+        .and_then(|value| credential_token(&value))
+        .unwrap_or(token);
     let project = match stored_project {
         Some(project) => project,
         None => resolve_project_id(&ReqwestProviderHttp::new(), &token)
@@ -181,7 +235,9 @@ async fn resolve_search_api_key(
                 default_project_id(email.as_deref().unwrap_or("antigravity-default"))
             }),
     };
-    Ok(Some(json!({ "token": token, "projectId": project }).to_string()))
+    Ok(Some(
+        json!({ "token": token, "projectId": project }).to_string(),
+    ))
 }
 
 /// Reads the `antigravity` entry of `agent_dir/auth.json`, when present.
@@ -209,11 +265,16 @@ fn credential_token(value: &Value) -> Option<String> {
 }
 
 fn credential_project(value: &Value) -> Option<String> {
-    ["projectId", "project"]
+    ["antigravityProjectId", "projectId", "project_id", "project"]
         .iter()
         .find_map(|key| value.get(*key).and_then(Value::as_str))
         .filter(|project| !project.is_empty())
         .map(str::to_string)
+}
+
+/// Whether a search error indicates that the account's quota has been exhausted.
+pub(crate) fn is_search_quota_exhausted(error: &str) -> bool {
+    crate::tools::antigravity_image_tool::is_image_quota_exhausted(error)
 }
 
 /// A string tool parameter, or `None` when absent or not a string.
@@ -252,10 +313,17 @@ mod tests {
 
     const FAKE_CREDENTIAL: &str = r#"{"token":"t","projectId":"p"}"#;
 
-    /// A scripted transport: serves a queue of responses and records the calls made.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    type HttpHandler = Box<
+        dyn Fn(&str, &[(String, String)]) -> Result<AntigravityHttpResponse, String> + Send + Sync,
+    >;
+
+    /// A scripted transport: serves a queue of responses or calls a handler, and records the calls made.
     struct ScriptedHttp {
         calls: Mutex<Vec<String>>,
         responses: Mutex<VecDeque<Result<AntigravityHttpResponse, String>>>,
+        handler: Option<HttpHandler>,
     }
 
     impl ScriptedHttp {
@@ -263,6 +331,21 @@ mod tests {
             Self {
                 calls: Mutex::new(Vec::new()),
                 responses: Mutex::new(responses.into_iter().collect()),
+                handler: None,
+            }
+        }
+
+        fn from_handler<F>(handler: F) -> Self
+        where
+            F: Fn(&str, &[(String, String)]) -> Result<AntigravityHttpResponse, String>
+                + Send
+                + Sync
+                + 'static,
+        {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                responses: Mutex::new(VecDeque::new()),
+                handler: Some(Box::new(handler)),
             }
         }
 
@@ -296,7 +379,7 @@ mod tests {
         fn post<'a>(
             &'a self,
             url: &'a str,
-            _headers: Vec<(String, String)>,
+            headers: Vec<(String, String)>,
             _body: Vec<u8>,
             _signal: Option<CancellationToken>,
         ) -> Pin<Box<dyn Future<Output = Result<AntigravityHttpResponse, String>> + Send + 'a>>
@@ -305,12 +388,22 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(url.to_string());
-            let response = self
+            if let Some(handler) = &self.handler {
+                let response = handler(url, &headers);
+                return Box::pin(async move { response });
+            }
+            let mut script = self
                 .responses
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pop_front()
-                .unwrap_or_else(|| Err("no scripted response".to_string()));
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let response = if script.is_empty() {
+                Err("no scripted response".to_string())
+            } else if script.len() == 1 {
+                script[0].clone()
+            } else {
+                script.pop_front().unwrap()
+            };
+            drop(script);
             Box::pin(async move { response })
         }
     }
@@ -439,14 +532,15 @@ mod tests {
         let http = Arc::new(ScriptedHttp::empty());
         let tool =
             antigravity_search_tool_with_context(context(Some(FAKE_CREDENTIAL), http.clone()));
-        let error = (tool.execute)("call-1", json!({}), None, None).await.unwrap_err();
+        let error = (tool.execute)("call-1", json!({}), None, None)
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "Search query is required.");
         assert!(http.calls().is_empty());
     }
 
     #[tokio::test]
     async fn missing_credentials_report_the_login_hint() {
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
         let _guard = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -468,9 +562,9 @@ mod tests {
             std::env::set_var("ANTIGRAVITY_API_KEY", saved);
         }
         assert!(
-            error.to_string().contains(
-                "No Antigravity credentials. Run /login antigravity first."
-            ),
+            error
+                .to_string()
+                .contains("No Antigravity credentials. Run /login antigravity first."),
             "{error}"
         );
         assert!(http.calls().is_empty());
@@ -482,7 +576,147 @@ mod tests {
             complete_credential(r#"{"access":"tok","project":"proj"}"#).as_deref(),
             Some(r#"{"token":"tok","projectId":"proj"}"#)
         );
+        assert_eq!(
+            complete_credential(r#"{"access":"tok","project_id":"proj"}"#).as_deref(),
+            Some(r#"{"token":"tok","projectId":"proj"}"#)
+        );
+        assert_eq!(
+            complete_credential(r#"{"access":"tok","antigravityProjectId":"proj"}"#).as_deref(),
+            Some(r#"{"token":"tok","projectId":"proj"}"#)
+        );
         assert!(complete_credential("ya29.raw-token").is_none());
         assert!(complete_credential(r#"{"token":"tok"}"#).is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_api_key_produces_token_and_project_id_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"antigravity":{"type":"oauth","access":"access-123","expires":0,"projectId":"proj-456"}}"#,
+        )
+        .unwrap();
+        let context = AntigravitySearchToolContext {
+            api_key: None,
+            agent_dir: Some(dir.path().to_path_buf()),
+            http: Arc::new(ScriptedHttp::empty()),
+        };
+        let resolved = resolve_search_api_key(&context).await.unwrap().unwrap();
+        let value: Value = serde_json::from_str(&resolved).unwrap();
+        assert_eq!(value["token"], "access-123");
+        assert_eq!(value["projectId"], "proj-456");
+
+        // Completing a raw bearer token with stored project id:
+        let raw_context = AntigravitySearchToolContext {
+            api_key: Some("raw-bearer-token".to_string()),
+            agent_dir: Some(dir.path().to_path_buf()),
+            http: Arc::new(ScriptedHttp::empty()),
+        };
+        let resolved_raw = resolve_search_api_key(&raw_context).await.unwrap().unwrap();
+        let value_raw: Value = serde_json::from_str(&resolved_raw).unwrap();
+        assert_eq!(value_raw["token"], "raw-bearer-token");
+        assert_eq!(value_raw["projectId"], "proj-456");
+
+        // JSON credential with token only, completed with stored project id:
+        let token_json_context = AntigravitySearchToolContext {
+            api_key: Some(r#"{"token":"extracted-token"}"#.to_string()),
+            agent_dir: Some(dir.path().to_path_buf()),
+            http: Arc::new(ScriptedHttp::empty()),
+        };
+        let resolved_json = resolve_search_api_key(&token_json_context)
+            .await
+            .unwrap()
+            .unwrap();
+        let value_json: Value = serde_json::from_str(&resolved_json).unwrap();
+        assert_eq!(value_json["token"], "extracted-token");
+        assert_eq!(value_json["projectId"], "proj-456");
+    }
+
+    #[tokio::test]
+    async fn failover_to_next_account_on_quota_exhausted() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir_str = dir.path().to_string_lossy().into_owned();
+
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os("PRIME_AGENT_CODING_AGENT_DIR");
+        std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir_str);
+
+        // Populate multi-account store with Account 2 and Account 1.
+        let acc2 = pa_ai::oauth::AccountCredentials {
+            access: "access-token-2".to_string(),
+            refresh: "refresh-token-2".to_string(),
+            expires: i64::MAX / 2,
+            project_id: Some("project-2".to_string()),
+            email: Some("account2@example.com".to_string()),
+        };
+        let acc1 = pa_ai::oauth::AccountCredentials {
+            access: "access-token-1".to_string(),
+            refresh: "refresh-token-1".to_string(),
+            expires: i64::MAX / 2,
+            project_id: Some("project-1".to_string()),
+            email: Some("account1@example.com".to_string()),
+        };
+        pa_ai::oauth::remember_account(&acc2);
+        pa_ai::oauth::remember_account(&acc1);
+
+        // auth.json holds Account 1 as active.
+        let auth_path = dir.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"antigravity":{"type":"oauth","access":"access-token-1","expires":0,"projectId":"project-1"}}"#,
+        )
+        .unwrap();
+
+        // ScriptedHttp: Account 1 returns 429 quota exhausted, Account 2 returns 200 with search data.
+        let http = Arc::new(ScriptedHttp::from_handler(|_url, headers| {
+            let auth = headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                .map(|(_, v)| v.as_str())
+                .unwrap_or_default();
+            if auth.contains("access-token-1") {
+                ScriptedHttp::status(
+                    429,
+                    r#"{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset in 3 hours.","status":"RESOURCE_EXHAUSTED"}}"#,
+                )
+            } else if auth.contains("access-token-2") {
+                ScriptedHttp::json(&search_body())
+            } else {
+                Err(format!("unexpected token in auth: {auth}"))
+            }
+        }));
+
+        let tool = antigravity_search_tool_with_context(AntigravitySearchToolContext {
+            api_key: None,
+            agent_dir: Some(dir.path().to_path_buf()),
+            http: http.clone(),
+        });
+
+        let result = (tool.execute)(
+            "call-1",
+            json!({ "query": "mimo 2.6", "thinking": true }),
+            None,
+            None,
+        )
+        .await;
+
+        match previous {
+            Some(prev) => std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", prev),
+            None => std::env::remove_var("PRIME_AGENT_CODING_AGENT_DIR"),
+        }
+
+        let result = result.expect("should failover to account 2 and succeed");
+        assert_eq!(result.content.len(), 1);
+        let text = result.content[0].as_text().unwrap();
+        assert!(text.contains("MiMo-V2.6 was released on September 22, 2026."));
+        let calls = http.calls();
+        assert!(
+            calls.len() >= 2,
+            "expected calls to account 1 (failing) and account 2 (succeeding), got {}",
+            calls.len()
+        );
     }
 }

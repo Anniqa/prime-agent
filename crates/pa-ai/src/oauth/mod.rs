@@ -25,9 +25,10 @@ pub use antigravity::{
     LOGIN_CANCELLED as ANTIGRAVITY_LOGIN_CANCELLED,
 };
 pub use antigravity_accounts::{
-    activate_account, failover_to_next_account, list_accounts, load_account_store,
-    remember_account, remove_account, sync_current_auth, update_remembered_account, AccountApiKey,
-    AccountCredentials, AccountError, AccountStore, AccountSummary, StoredAccount,
+    activate_account, failover_to_next_account, failover_to_next_account_with_dir, list_accounts,
+    load_account_store, remember_account, remove_account, sync_current_auth,
+    update_remembered_account, AccountApiKey, AccountCredentials, AccountError, AccountStore,
+    AccountSummary, StoredAccount,
 };
 pub use callback::CodexCallbackServer;
 pub use github_copilot::{

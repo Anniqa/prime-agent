@@ -18,9 +18,9 @@ use pa_ai::antigravity_image::{
     GenerateImageOptions, GENERATE_IMAGE_TOOL_DESCRIPTION, GENERATE_IMAGE_TOOL_LABEL,
     GENERATE_IMAGE_TOOL_NAME, GENERATE_IMAGE_TOOL_PROMPT_SNIPPET,
 };
-use pa_ai::antigravity_types::{AntigravityHttp, ReqwestAntigravityHttp};
+use pa_ai::antigravity_types::{safe_error, AntigravityHttp, ReqwestAntigravityHttp};
 use pa_ai::oauth::{
-    default_project_id, failover_to_next_account, resolve_project_id, ReqwestProviderHttp,
+    default_project_id, failover_to_next_account_with_dir, resolve_project_id, ReqwestProviderHttp,
 };
 use serde_json::{json, Value};
 
@@ -140,8 +140,12 @@ async fn execute_generate_image(
             Err(error) => {
                 if is_image_quota_exhausted(&error) {
                     let provider_http = ReqwestProviderHttp::new();
-                    if let Some(next) =
-                        failover_to_next_account(&provider_http, &tried_tokens).await
+                    if let Some(next) = failover_to_next_account_with_dir(
+                        &provider_http,
+                        context.agent_dir.as_deref(),
+                        &tried_tokens,
+                    )
+                    .await
                     {
                         tried_tokens.push(next.token.clone());
                         let project = match next.project_id {
@@ -158,9 +162,12 @@ async fn execute_generate_image(
                             json!({ "token": next.token, "projectId": project }).to_string();
                         continue;
                     }
-                    anyhow::bail!("Antigravity image quota exhausted for all accounts: {error}");
+                    anyhow::bail!(
+                        "Antigravity image quota exhausted for all accounts: {}",
+                        safe_error(&error)
+                    );
                 }
-                anyhow::bail!("{error}");
+                anyhow::bail!("{}", safe_error(&error));
             }
         }
     };
@@ -238,6 +245,10 @@ async fn resolve_image_api_key(
     }
 
     let token = raw.trim().to_string();
+    let token = serde_json::from_str::<serde_json::Value>(&token)
+        .ok()
+        .and_then(|value| credential_token(&value))
+        .unwrap_or(token);
     let project = match stored_project {
         Some(project) => project,
         None => resolve_project_id(&ReqwestProviderHttp::new(), &token)
@@ -276,7 +287,7 @@ fn credential_token(value: &Value) -> Option<String> {
 }
 
 fn credential_project(value: &Value) -> Option<String> {
-    ["projectId", "project"]
+    ["antigravityProjectId", "projectId", "project_id", "project"]
         .iter()
         .find_map(|key| value.get(*key).and_then(Value::as_str))
         .filter(|project| !project.is_empty())
@@ -284,15 +295,20 @@ fn credential_project(value: &Value) -> Option<String> {
 }
 
 /// Whether an image generation error indicates that the account's quota has been exhausted.
-fn is_image_quota_exhausted(error: &str) -> bool {
+pub(crate) fn is_image_quota_exhausted(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
-    lower.contains("429")
+    // Standalone 429 (word boundary) — matches "HTTP 429", "(429)", but not "14293".
+    let has_429 = lower
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|token| token == "429");
+    has_429
         || lower.contains("resource_exhausted")
+        || lower.contains("resource exhausted")
+        || lower.contains("resource has been exhausted")
         || lower.contains("exhausted your capacity")
-        || lower.contains("quota will reset")
-        || lower.contains("quota exceeded")
+        || lower.contains("quota")
+        || lower.contains("too many requests")
         || lower.contains("rate limit")
-        || lower.contains("limit reached")
 }
 
 /// A string tool parameter, or `None` when absent or not a string.
@@ -625,6 +641,21 @@ mod tests {
         let value_raw: Value = serde_json::from_str(&resolved_raw).unwrap();
         assert_eq!(value_raw["token"], "raw-bearer-token");
         assert_eq!(value_raw["projectId"], "proj-456");
+
+        // JSON credential with token only, completed with stored project id:
+        let token_json_context = AntigravityImageToolContext {
+            cwd: ".".to_string(),
+            api_key: Some(r#"{"token":"extracted-token"}"#.to_string()),
+            agent_dir: Some(dir.path().to_path_buf()),
+            http: Arc::new(ScriptedHttp::new(Vec::new())),
+        };
+        let resolved_json = resolve_image_api_key(&token_json_context)
+            .await
+            .unwrap()
+            .unwrap();
+        let value_json: Value = serde_json::from_str(&resolved_json).unwrap();
+        assert_eq!(value_json["token"], "extracted-token");
+        assert_eq!(value_json["projectId"], "proj-456");
     }
 
     #[test]
@@ -633,8 +664,33 @@ mod tests {
             complete_credential(r#"{"access":"tok","project":"proj"}"#).as_deref(),
             Some(r#"{"token":"tok","projectId":"proj"}"#)
         );
+        assert_eq!(
+            complete_credential(r#"{"access":"tok","project_id":"proj"}"#).as_deref(),
+            Some(r#"{"token":"tok","projectId":"proj"}"#)
+        );
+        assert_eq!(
+            complete_credential(r#"{"access":"tok","antigravityProjectId":"proj"}"#).as_deref(),
+            Some(r#"{"token":"tok","projectId":"proj"}"#)
+        );
         assert!(complete_credential("ya29.raw-token").is_none());
         assert!(complete_credential(r#"{"token":"tok"}"#).is_none());
+    }
+
+    #[test]
+    fn quota_exhausted_matcher_identifies_rate_limits() {
+        assert!(is_image_quota_exhausted("HTTP 429: Rate limit exceeded"));
+        assert!(is_image_quota_exhausted("HTTP 429"));
+        assert!(is_image_quota_exhausted("(429)"));
+        assert!(is_image_quota_exhausted("Too Many Requests"));
+        assert!(is_image_quota_exhausted("RESOURCE_EXHAUSTED"));
+        assert!(is_image_quota_exhausted("resource has been exhausted"));
+        assert!(is_image_quota_exhausted("exhausted your capacity"));
+        assert!(is_image_quota_exhausted("Quota exceeded"));
+        assert!(is_image_quota_exhausted("rate limit exceeded"));
+
+        assert!(!is_image_quota_exhausted("saved to image-14293.png"));
+        assert!(!is_image_quota_exhausted("prompt limit reached"));
+        assert!(!is_image_quota_exhausted("unknown failure"));
     }
 
     #[tokio::test]

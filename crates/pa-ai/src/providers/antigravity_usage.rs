@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
+use crate::providers::antigravity_models::register_discovered_model_enums;
 use crate::providers::antigravity_types::{
     antigravity_env, antigravity_headers, endpoint_candidates, is_record, js_number, js_string,
     js_truthy, parse_api_key, redact_secrets, safe_error, strip_validation_urls, value_as_number,
@@ -67,14 +68,12 @@ fn update<F: FnOnce(&mut DiagnosticsSnapshot)>(change: F) {
 }
 
 fn current() -> DiagnosticsSnapshot {
-    if let Ok(snapshot) = BAG.try_with(|bag| bag.lock().map(|guard| guard.clone()).unwrap_or_default())
+    if let Ok(snapshot) =
+        BAG.try_with(|bag| bag.lock().map(|guard| guard.clone()).unwrap_or_default())
     {
         return snapshot;
     }
-    last()
-        .lock()
-        .map(|guard| guard.clone())
-        .unwrap_or_default()
+    last().lock().map(|guard| guard.clone()).unwrap_or_default()
 }
 
 /// Run work with an isolated diagnostics bag; commits it to the last snapshot when done.
@@ -129,12 +128,8 @@ pub fn set_last_endpoint(endpoint: Option<&str>) {
 /// Record the last error, redacted, validation URLs stripped, and capped at 800 chars.
 pub fn set_last_error(error: Option<&str>) {
     update(|bag| {
-        bag.error = error.map(|value| {
-            take_chars(
-                &strip_validation_urls(&redact_secrets(value)),
-                800,
-            )
-        });
+        bag.error =
+            error.map(|value| take_chars(&strip_validation_urls(&redact_secrets(value)), 800));
     });
 }
 
@@ -413,7 +408,14 @@ async fn fetch_quota_summary_safe(
     token: &str,
     http: &dyn AntigravityHttp,
 ) -> Result<PostJsonResult, String> {
-    match post_json("/v1internal:retrieveUserQuotaSummary", token, &json!({}), http).await {
+    match post_json(
+        "/v1internal:retrieveUserQuotaSummary",
+        token,
+        &json!({}),
+        http,
+    )
+    .await
+    {
         Ok(result) => Ok(result),
         Err(error) => {
             let message = safe_error(&error);
@@ -444,20 +446,20 @@ pub fn parse_quota_summary(data: &Value) -> (Vec<QuotaGroup>, Option<String>) {
                     if remaining.is_none() && !has_bucket_id {
                         continue;
                     }
-                    let bucket_id = first_truthy(&[
-                        bucket.bucket_id.as_ref(),
-                        bucket.display_name.as_ref(),
-                    ])
-                    .unwrap_or_else(|| "unknown".to_string());
-                    let display_name = first_truthy(&[
-                        bucket.display_name.as_ref(),
-                        bucket.bucket_id.as_ref(),
-                    ])
-                    .unwrap_or_else(|| "Limit".to_string());
+                    let bucket_id =
+                        first_truthy(&[bucket.bucket_id.as_ref(), bucket.display_name.as_ref()])
+                            .unwrap_or_else(|| "unknown".to_string());
+                    let display_name =
+                        first_truthy(&[bucket.display_name.as_ref(), bucket.bucket_id.as_ref()])
+                            .unwrap_or_else(|| "Limit".to_string());
                     buckets.push(QuotaBucket {
                         bucket_id,
                         display_name,
-                        window: bucket.window.as_ref().filter(|value| js_truthy(value)).map(js_string),
+                        window: bucket
+                            .window
+                            .as_ref()
+                            .filter(|value| js_truthy(value))
+                            .map(js_string),
                         reset_time: bucket
                             .reset_time
                             .as_ref()
@@ -472,9 +474,7 @@ pub fn parse_quota_summary(data: &Value) -> (Vec<QuotaGroup>, Option<String>) {
                     });
                 }
             }
-            if buckets.is_empty()
-                && !group.display_name.as_ref().is_some_and(js_truthy)
-            {
+            if buckets.is_empty() && !group.display_name.as_ref().is_some_and(js_truthy) {
                 continue;
             }
             groups.push(QuotaGroup {
@@ -529,7 +529,12 @@ pub fn parse_models(data: &Value) -> (Vec<ModelQuotaRow>, Option<String>) {
                     .as_ref()
                     .and_then(Value::as_str)
                     .map(str::to_string)
-                    .or_else(|| info.label.as_ref().and_then(Value::as_str).map(str::to_string))
+                    .or_else(|| {
+                        info.label
+                            .as_ref()
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
                     .or_else(|| {
                         info.model_name
                             .as_ref()
@@ -556,9 +561,7 @@ pub fn parse_models(data: &Value) -> (Vec<ModelQuotaRow>, Option<String>) {
                             .and_then(Value::as_str)
                             .map(str::to_string)
                     }),
-                supports_thinking: Some(
-                    info.supports_thinking.as_ref().is_some_and(js_truthy),
-                ),
+                supports_thinking: Some(info.supports_thinking.as_ref().is_some_and(js_truthy)),
                 supports_images: Some(info.supports_images.as_ref().is_some_and(js_truthy)),
                 recommended: Some(info.recommended.as_ref().is_some_and(js_truthy)),
             });
@@ -585,7 +588,11 @@ pub fn parse_tier(value: Option<&Value>) -> Option<TierInfo> {
         return None;
     }
     Some(TierInfo {
-        id: tier.id.as_ref().filter(|value| js_truthy(value)).map(js_string),
+        id: tier
+            .id
+            .as_ref()
+            .filter(|value| js_truthy(value))
+            .map(js_string),
         name: tier
             .name
             .as_ref()
@@ -618,8 +625,8 @@ async fn fetch_available_models_from_endpoint(
     {
         Ok(response) => {
             let text = response.text();
-            let data =
-                serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({ "raw": text.clone() }));
+            let data = serde_json::from_str::<Value>(&text)
+                .unwrap_or_else(|_| json!({ "raw": text.clone() }));
             if !response.ok() {
                 let message = data
                     .get("error")
@@ -687,6 +694,8 @@ pub fn merge_available_models_results(
         return Err("/v1internal:fetchAvailableModels failed: no endpoint available".to_string());
     }
 
+    register_discovered_model_enums(&merged);
+
     Ok(PostJsonResult {
         endpoint: last_endpoint,
         status: last_status,
@@ -707,8 +716,14 @@ async fn fetch_available_models_catalog(
     let mut results = Vec::new();
     for endpoint in endpoint_candidates() {
         results.push(
-            fetch_available_models_from_endpoint(&endpoint, token, project_id, signal.clone(), http)
-                .await,
+            fetch_available_models_from_endpoint(
+                &endpoint,
+                token,
+                project_id,
+                signal.clone(),
+                http,
+            )
+            .await,
         );
     }
     merge_available_models_results(results)
@@ -755,9 +770,10 @@ pub async fn fetch_account_usage(
     let available = available?;
     let (models, default_agent_model_id) = parse_models(&available.data);
 
-    let assist_data = assist.as_ref().map_or(Value::Null, |result| result.data.clone());
-    let assist_raw: LoadCodeAssistRaw =
-        serde_json::from_value(assist_data).unwrap_or_default();
+    let assist_data = assist
+        .as_ref()
+        .map_or(Value::Null, |result| result.data.clone());
+    let assist_raw: LoadCodeAssistRaw = serde_json::from_value(assist_data).unwrap_or_default();
     let product_tier = parse_tier(assist_raw.current_tier.as_ref());
     let paid_tier = parse_tier(assist_raw.paid_tier.as_ref());
 
@@ -765,11 +781,17 @@ pub async fn fetch_account_usage(
     // subscription lives in paidTier (e.g. g1-pro-tier / Google AI Pro).
     let plan_label = paid_tier
         .as_ref()
-        .and_then(|tier| tier.name.as_ref().map(|name| tier_label(name, tier.id.as_deref())))
-        .or_else(|| {
-            product_tier
+        .and_then(|tier| {
+            tier.name
                 .as_ref()
-                .and_then(|tier| tier.name.as_ref().map(|name| tier_label(name, tier.id.as_deref())))
+                .map(|name| tier_label(name, tier.id.as_deref()))
+        })
+        .or_else(|| {
+            product_tier.as_ref().and_then(|tier| {
+                tier.name
+                    .as_ref()
+                    .map(|name| tier_label(name, tier.id.as_deref()))
+            })
         });
 
     let endpoint = summary_result
@@ -1137,7 +1159,9 @@ mod tests {
     #[test]
     fn parses_tiers_and_project_ids() {
         assert_eq!(
-            parse_tier(Some(&json!({ "name": "Google AI Pro", "id": "g1-pro-tier" }))),
+            parse_tier(Some(
+                &json!({ "name": "Google AI Pro", "id": "g1-pro-tier" })
+            )),
             Some(TierInfo {
                 id: Some("g1-pro-tier".to_string()),
                 name: Some("Google AI Pro".to_string()),
@@ -1203,9 +1227,12 @@ mod tests {
     #[test]
     fn parses_iso_reset_times() {
         assert_eq!(parse_iso8601_ms("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_iso8601_ms("2026-10-12T17:02:03.456Z"), Some(
-            days_from_civil(2026, 10, 12) * 86_400_000 + (17 * 3600 + 2 * 60 + 3) * 1000 + 456
-        ));
+        assert_eq!(
+            parse_iso8601_ms("2026-10-12T17:02:03.456Z"),
+            Some(
+                days_from_civil(2026, 10, 12) * 86_400_000 + (17 * 3600 + 2 * 60 + 3) * 1000 + 456
+            )
+        );
         assert_eq!(parse_iso8601_ms("not-a-date"), None);
         assert_eq!(format_reset(None), "n/a");
         assert_eq!(format_reset(Some("not-a-date")), "not-a-date");
@@ -1238,6 +1265,28 @@ mod tests {
         assert_eq!(
             get_last_diagnostics().endpoint.as_deref(),
             Some("https://inside.test")
+        );
+    }
+
+    #[test]
+    fn merge_available_models_results_registers_model_enums() {
+        let result = PostJsonResult {
+            endpoint: "https://cloudcode-pa.googleapis.com".to_string(),
+            status: 200,
+            data: json!({
+                "models": {
+                    "test-model-custom-123": {
+                        "model": "test-enum-custom-123"
+                    }
+                },
+                "defaultAgentModelId": "test-model-custom-123"
+            }),
+        };
+        let merged = merge_available_models_results(vec![Some(result)]).unwrap();
+        assert_eq!(merged.status, 200);
+        assert_eq!(
+            crate::providers::antigravity_models::model_enum("test-model-custom-123"),
+            Some("test-enum-custom-123".to_string())
         );
     }
 }

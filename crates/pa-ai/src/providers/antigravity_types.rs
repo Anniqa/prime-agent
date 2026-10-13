@@ -36,7 +36,7 @@ pub use crate::providers::antigravity::{
 };
 // Request-type constants owned by the model catalog (`antigravity_models.rs`).
 pub use crate::providers::antigravity_models::{
-    AntigravityRouting, API_ANTIGRAVITY, ANTIGRAVITY_ENDPOINT_FALLBACKS, ANTIGRAVITY_USER_AGENT,
+    AntigravityRouting, ANTIGRAVITY_ENDPOINT_FALLBACKS, ANTIGRAVITY_USER_AGENT, API_ANTIGRAVITY,
     DEFAULT_ANTIGRAVITY_BASE_URL, REQUEST_TYPE_AGENT, REQUEST_TYPE_IMAGE_GEN,
 };
 
@@ -348,10 +348,12 @@ pub struct GeminiToolConfig {
 }
 
 /// `ThinkingWire` in `types.ts` (the `generationConfig.thinkingConfig` shape).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThinkingWire {
+    #[serde(default)]
     pub include_thoughts: bool,
+    #[serde(default)]
     pub thinking_budget: i64,
 }
 
@@ -748,18 +750,20 @@ impl AntigravityHttp for ReqwestAntigravityHttp {
         signal: Option<CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<AntigravityHttpResponse, String>> + Send + 'a>> {
         Box::pin(async move {
-            let mut response = crate::utils_inner::http::send(crate::utils_inner::http::RequestOptions {
-                method: reqwest::Method::POST,
-                url: url.to_string(),
-                headers,
-                body: Some(String::from_utf8_lossy(&body).into_owned()),
-                signal,
-                timeout_ms: Some(30_000),
-                connection: crate::utils_inner::stream_failure::ConnectionErrorProfile::RawFetch,
-                transport: crate::utils_inner::http::Transport::Http1,
-            })
-            .await
-            .map_err(|error| error.to_string())?;
+            let mut response =
+                crate::utils_inner::http::send(crate::utils_inner::http::RequestOptions {
+                    method: reqwest::Method::POST,
+                    url: url.to_string(),
+                    headers,
+                    body: Some(String::from_utf8_lossy(&body).into_owned()),
+                    signal,
+                    timeout_ms: Some(30_000),
+                    connection:
+                        crate::utils_inner::stream_failure::ConnectionErrorProfile::RawFetch,
+                    transport: crate::utils_inner::http::Transport::Http1,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
             let status = response.status;
             let text = response
                 .read_all_text()
@@ -797,7 +801,9 @@ pub fn js_string(value: &Value) -> String {
         Value::Bool(flag) => flag.to_string(),
         Value::Number(number) => match number.as_i64() {
             Some(value) => value.to_string(),
-            None => number.as_f64().map_or_else(|| number.to_string(), js_number),
+            None => number
+                .as_f64()
+                .map_or_else(|| number.to_string(), js_number),
         },
         Value::String(text) => text.clone(),
         Value::Array(items) => items.iter().map(js_string).collect::<Vec<_>>().join(","),
@@ -916,7 +922,12 @@ pub fn redact_secrets(text: &str) -> String {
         "[redacted-access-token]",
         false,
     );
-    let text = replace_all(text.as_str(), r"\b1/[A-Za-z0-9_-]{20,}", "[redacted-refresh-token]", false);
+    let text = replace_all(
+        text.as_str(),
+        r"\b1/[A-Za-z0-9_-]{20,}",
+        "[redacted-refresh-token]",
+        false,
+    );
     let text = replace_all(
         text.as_str(),
         r"\bBearer\s+[A-Za-z0-9._~+/-]+=*",
@@ -1041,7 +1052,9 @@ mod tests {
 
     #[test]
     fn parse_api_key_matches_the_extension() {
-        assert!(parse_api_key(None).unwrap_err().contains("No Antigravity OAuth credentials"));
+        assert!(parse_api_key(None)
+            .unwrap_err()
+            .contains("No Antigravity OAuth credentials"));
         let good = parse_api_key(Some(r#"{"token":"t","projectId":"p"}"#)).unwrap();
         assert_eq!(good.token, "t");
         assert_eq!(good.project_id, "p");
@@ -1054,20 +1067,46 @@ mod tests {
     }
 
     #[test]
+    fn thinking_wire_deserializes_with_defaults() {
+        let empty: ThinkingWire = serde_json::from_str("{}").unwrap();
+        assert!(!empty.include_thoughts);
+        assert_eq!(empty.thinking_budget, 0);
+
+        let partial: ThinkingWire = serde_json::from_str(r#"{"includeThoughts": true}"#).unwrap();
+        assert!(partial.include_thoughts);
+        assert_eq!(partial.thinking_budget, 0);
+
+        let budget_only: ThinkingWire =
+            serde_json::from_str(r#"{"thinkingBudget": 2048}"#).unwrap();
+        assert!(!budget_only.include_thoughts);
+        assert_eq!(budget_only.thinking_budget, 2048);
+    }
+
+    #[test]
     fn endpoint_candidates_default_to_the_ordered_fallbacks() {
         std::env::remove_var("ANTIGRAVITY_BASE_URL");
         let candidates = endpoint_candidates();
         assert!(!candidates.is_empty());
-        assert!(candidates.iter().all(|endpoint| endpoint.starts_with("https://")));
+        assert!(candidates
+            .iter()
+            .all(|endpoint| endpoint.starts_with("https://")));
     }
 
     #[test]
     fn masks_and_strips_like_the_extension() {
-        assert_eq!(mask_email(Some("alice@example.com")).as_deref(), Some("a***e@example.com"));
-        assert_eq!(mask_email(Some("ab@example.com")).as_deref(), Some("a***@example.com"));
+        assert_eq!(
+            mask_email(Some("alice@example.com")).as_deref(),
+            Some("a***e@example.com")
+        );
+        assert_eq!(
+            mask_email(Some("ab@example.com")).as_deref(),
+            Some("a***@example.com")
+        );
         assert_eq!(mask_email(None), None);
-        assert!(strip_validation_urls("see https://accounts.google.com/o/oauth2/approval?x=1 now")
-            .contains("[redacted-validation-url]"));
+        assert!(
+            strip_validation_urls("see https://accounts.google.com/o/oauth2/approval?x=1 now")
+                .contains("[redacted-validation-url]")
+        );
     }
 
     #[test]

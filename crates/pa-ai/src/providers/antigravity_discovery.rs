@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::oauth::resolve_project_id;
-use crate::oauth::{ProviderHttp, ProviderHttpMethod, ProviderHttpRequest, ProviderHttpResponse};
+use crate::oauth::{ProviderHttp, ProviderHttpMethod, ProviderHttpRequest};
 use crate::providers::antigravity::{antigravity_headers, endpoint_candidates};
 use crate::providers::antigravity_grouping::{build_antigravity_catalog, resolved_catalog};
 use crate::providers::antigravity_models::{
@@ -396,6 +396,7 @@ mod tests {
     //! TTL skipping, and the persist payload, with a scripted `ProviderHttp` (no network).
 
     use super::*;
+    use crate::oauth::ProviderHttpResponse;
     use crate::providers::antigravity_grouping::build_antigravity_catalog;
     use crate::providers::antigravity_models::{
         clear_model_enum_cache, compiled_catalog, current_models, global_state_test_lock,

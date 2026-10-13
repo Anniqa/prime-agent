@@ -166,15 +166,18 @@ fn parse_api_key(raw: &str) -> Option<AntigravityApiKey> {
     }
     if trimmed.starts_with('{') {
         if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            let token = ["token", "access", "access_token"]
-                .iter()
-                .find_map(|key| value.get(*key).and_then(Value::as_str))
-                .filter(|token| !token.is_empty());
-            if let Some(token) = token {
-                return Some(AntigravityApiKey {
-                    token: token.to_string(),
-                    project_id: extract_project_id(&value),
-                });
+            if value.is_object() {
+                let token = ["token", "access", "access_token"]
+                    .iter()
+                    .find_map(|key| value.get(*key).and_then(Value::as_str))
+                    .filter(|token| !token.is_empty());
+                if let Some(token) = token {
+                    return Some(AntigravityApiKey {
+                        token: token.to_string(),
+                        project_id: extract_project_id(&value),
+                    });
+                }
+                return None;
             }
         }
     }
@@ -265,7 +268,7 @@ fn read_credential_entry() -> Option<Value> {
 }
 
 /// Merge the credential sources: an explicit/JSON `api_key`, the provider env var, and the stored
-/// credential file. The stored file's `projectId` wins over a project id carried in the JSON key.
+/// credential file. An explicit key's `projectId` wins over a stored file's project id.
 fn merge_credentials(
     raw_key: Option<&str>,
     env_token: Option<String>,
@@ -278,10 +281,9 @@ fn merge_credentials(
         .filter(|token| !token.trim().is_empty())
         .or_else(|| env_token.filter(|token| !token.trim().is_empty()))
         .or_else(|| stored.as_ref().and_then(|stored| stored.token.clone()));
-    let project_id = stored
-        .as_ref()
-        .and_then(|stored| stored.project_id.clone())
-        .or_else(|| parsed.and_then(|key| key.project_id));
+    let project_id = parsed
+        .and_then(|key| key.project_id)
+        .or_else(|| stored.as_ref().and_then(|stored| stored.project_id.clone()));
     let email = stored.and_then(|stored| stored.email);
     StoredAntigravityCredential {
         token,
@@ -638,6 +640,13 @@ fn process_sse(
     if let Some(error) = parsed.get("error") {
         if !error.is_null() {
             return Err(chunk_error(error));
+        }
+    }
+    if let Some(response) = parsed.get("response") {
+        if let Some(error) = response.get("error") {
+            if !error.is_null() {
+                return Err(chunk_error(error));
+            }
         }
     }
     state
@@ -1113,6 +1122,8 @@ mod tests {
                 project_id: None,
             })
         );
+        assert_eq!(parse_api_key(r#"{"other":"field"}"#), None);
+        assert_eq!(parse_api_key("{}"), None);
         assert_eq!(parse_api_key("   "), None);
     }
 
@@ -1145,24 +1156,41 @@ mod tests {
     }
 
     #[test]
-    fn credential_sources_merge_with_file_project_winning() {
+    fn credential_sources_merge_with_key_project_winning() {
         let stored = Some(StoredAntigravityCredential {
             token: Some("file-token".to_string()),
             project_id: Some("file-project".to_string()),
             email: Some("user@example.com".to_string()),
         });
-        // The JSON key's project id loses to the stored file's project id.
+        // The JSON key's project id wins over the stored file's project id.
         let merged = merge_credentials(
             Some(r#"{"token":"key-token","projectId":"key-project"}"#),
             Some("env-token".to_string()),
             stored.clone(),
         );
         assert_eq!(merged.token.as_deref(), Some("key-token"));
-        assert_eq!(merged.project_id.as_deref(), Some("file-project"));
+        assert_eq!(merged.project_id.as_deref(), Some("key-project"));
+
+        // When the explicit JSON key has no project id, stored project id is used.
+        let fallback_proj = merge_credentials(
+            Some(r#"{"token":"key-token"}"#),
+            Some("env-token".to_string()),
+            stored.clone(),
+        );
+        assert_eq!(fallback_proj.token.as_deref(), Some("key-token"));
+        assert_eq!(fallback_proj.project_id.as_deref(), Some("file-project"));
 
         // The env var is only used when no key is present.
         let env_only = merge_credentials(None, Some("env-token".to_string()), stored);
         assert_eq!(env_only.token.as_deref(), Some("env-token"));
+
+        // A JSON key without token does not block fallback to env or stored.
+        let json_without_token = merge_credentials(
+            Some(r#"{"other":"data"}"#),
+            Some("env-token".to_string()),
+            None,
+        );
+        assert_eq!(json_without_token.token.as_deref(), Some("env-token"));
 
         // No source at all leaves the token empty (the provider then errors).
         let empty = merge_credentials(None, None, None);
@@ -1436,6 +1464,18 @@ mod tests {
             &writer,
         );
         assert!(result.is_err());
+
+        // Nested error frame: {"response": {"error": ...}}
+        let mut state2 = GoogleStreamState::new();
+        let mut output2 = test_output();
+        let result2 = process_sse(
+            r#"{"response":{"error":{"code":429,"message":"Resource exhausted"}}}"#,
+            &mut state2,
+            &model,
+            &mut output2,
+            &writer,
+        );
+        assert!(result2.is_err());
     }
 
     #[test]

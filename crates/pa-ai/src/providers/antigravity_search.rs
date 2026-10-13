@@ -166,7 +166,10 @@ pub fn build_search_request(
     }
     let urls: &[String] = options.urls.as_deref().unwrap_or(&[]);
     if !urls.is_empty() {
-        prompt.push_str(&format!("\n\nURLs to analyze in detail:\n{}", urls.join("\n")));
+        prompt.push_str(&format!(
+            "\n\nURLs to analyze in detail:\n{}",
+            urls.join("\n")
+        ));
     }
 
     let mut tools = vec![json!({ "googleSearch": {} })];
@@ -175,7 +178,11 @@ pub fn build_search_request(
     }
 
     // Default budget stays at 0 so interactive lookups stay fast; --thinking opts into planning.
-    let thinking_budget = if options.thinking == Some(true) { 4096 } else { 0 };
+    let thinking_budget = if options.thinking == Some(true) {
+        4096
+    } else {
+        0
+    };
     // Cloud Code rejects `thinkingBudget: 0` with HTTP 400 ("Request contains an invalid
     // argument"), so send the budget only when it is non-zero. `includeThoughts: false` alone is
     // accepted and stays closest to the extension's wire config.
@@ -280,7 +287,9 @@ pub fn parse_search_response(data: &Value) -> SearchResult {
     {
         let mut collected = Vec::new();
         for (index, part) in parts.iter().enumerate() {
-            let is_thought = part.get("thought").is_some_and(crate::providers::antigravity_types::js_truthy);
+            let is_thought = part
+                .get("thought")
+                .is_some_and(crate::providers::antigravity_types::js_truthy);
             let text = part.get("text").and_then(Value::as_str);
             if !is_thought {
                 if let Some(text) = text {
@@ -362,7 +371,9 @@ pub fn parse_search_response(data: &Value) -> SearchResult {
             let Some(segment_text) = segment.get("text").and_then(Value::as_str) else {
                 continue;
             };
-            let Some(chunk_indices) = support.get("groundingChunkIndices").and_then(Value::as_array)
+            let Some(chunk_indices) = support
+                .get("groundingChunkIndices")
+                .and_then(Value::as_array)
             else {
                 continue;
             };
@@ -389,13 +400,16 @@ pub fn parse_search_response(data: &Value) -> SearchResult {
             if indices.is_empty() {
                 continue;
             }
-            result.supports.get_or_insert_with(Vec::new).push(SearchSupport {
-                text: segment_text.to_string(),
-                start_index: segment.get("startIndex").and_then(value_as_number),
-                end_index: segment.get("endIndex").and_then(value_as_number),
-                part_index: segment.get("partIndex").and_then(value_as_number),
-                source_indices: indices,
-            });
+            result
+                .supports
+                .get_or_insert_with(Vec::new)
+                .push(SearchSupport {
+                    text: segment_text.to_string(),
+                    start_index: segment.get("startIndex").and_then(value_as_number),
+                    end_index: segment.get("endIndex").and_then(value_as_number),
+                    part_index: segment.get("partIndex").and_then(value_as_number),
+                    source_indices: indices,
+                });
         }
     }
 
@@ -455,7 +469,10 @@ fn cite_search_text(res: &SearchResult) -> String {
             }
             let entry = insertions.entry(end as i64).or_default();
             for index in &support.source_indices {
-                if index.fract() == 0.0 && *index >= 0.0 && source_indices.contains(&(*index as i64)) {
+                if index.fract() == 0.0
+                    && *index >= 0.0
+                    && source_indices.contains(&(*index as i64))
+                {
                     let value = *index as i64;
                     if !entry.contains(&value) {
                         entry.push(value);
@@ -466,7 +483,10 @@ fn cite_search_text(res: &SearchResult) -> String {
 
         let mut cited = bytes;
         for (end, indices) in insertions.iter().rev() {
-            let references: String = indices.iter().map(|index| format!("[{}]", index + 1)).collect();
+            let references: String = indices
+                .iter()
+                .map(|index| format!("[{}]", index + 1))
+                .collect();
             let position = *end as usize;
             let mut next = Vec::with_capacity(cited.len() + references.len());
             next.extend_from_slice(&cited[..position]);
@@ -496,7 +516,10 @@ pub fn format_search_result(res: &SearchResult) -> String {
     }
 
     if !res.sources.is_empty() {
-        let has_supports = res.supports.as_ref().is_some_and(|supports| !supports.is_empty());
+        let has_supports = res
+            .supports
+            .as_ref()
+            .is_some_and(|supports| !supports.is_empty());
         let list = res
             .sources
             .iter()
@@ -578,7 +601,8 @@ pub async fn execute_antigravity_search(
             match response {
                 Ok(response) => {
                     if !response.ok() {
-                        last_error = take_chars(&json_or_text_error(&response.text()), 400);
+                        last_error =
+                            take_chars(&safe_error(&json_or_text_error(&response.text())), 400);
                         if response.status == 404
                             || [429, 500, 502, 503, 504].contains(&response.status)
                         {
@@ -762,7 +786,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("focus on benchmarks"));
-        assert_eq!(request["request"]["generationConfig"]["thinkingConfig"]["thinkingBudget"], 4096);
+        assert_eq!(
+            request["request"]["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            4096
+        );
     }
 
     #[test]
@@ -835,11 +862,21 @@ mod tests {
         }));
 
         assert_eq!(
-            grounded.parts.as_ref().unwrap().iter().map(|part| part.index).collect::<Vec<_>>(),
+            grounded
+                .parts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|part| part.index)
+                .collect::<Vec<_>>(),
             vec![0, 2]
         );
         assert_eq!(
-            grounded.sources.iter().map(|source| source.index).collect::<Vec<_>>(),
+            grounded
+                .sources
+                .iter()
+                .map(|source| source.index)
+                .collect::<Vec<_>>(),
             vec![Some(0), Some(2)]
         );
         assert_eq!(
@@ -919,6 +956,60 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, "Search query is required.");
+    }
+
+    struct MockErrorHttp {
+        status: u16,
+        body: String,
+    }
+
+    impl AntigravityHttp for MockErrorHttp {
+        fn post<'a>(
+            &'a self,
+            _url: &'a str,
+            _headers: Vec<(String, String)>,
+            _body: Vec<u8>,
+            _signal: Option<CancellationToken>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::providers::antigravity_types::AntigravityHttpResponse,
+                            String,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                Ok(
+                    crate::providers::antigravity_types::AntigravityHttpResponse {
+                        status: self.status,
+                        body: self.body.as_bytes().to_vec(),
+                    },
+                )
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn search_redacts_secrets_in_http_error() {
+        let http = MockErrorHttp {
+            status: 400,
+            body: "Invalid key: ya29.secret_token_12345 in request".to_string(),
+        };
+        let error = execute_antigravity_search(
+            &ExecuteSearchOptions {
+                query: "test query".to_string(),
+                api_key: Some(r#"{"token":"test-token","projectId":"test-proj"}"#.to_string()),
+                ..ExecuteSearchOptions::default()
+            },
+            &http,
+        )
+        .await
+        .unwrap_err();
+        assert!(!error.contains("secret_token_12345"));
+        assert!(error.contains("[redacted-access-token]"));
     }
 
     #[test]

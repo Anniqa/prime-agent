@@ -594,6 +594,7 @@ fn sanitize_oauth_provider_error(text: &str) -> String {
         }
     }
     let bounded: String = trimmed.chars().take(300).collect();
+    let bounded = crate::providers::antigravity_types::redact_secrets(&bounded);
     if bounded.is_empty() {
         "unknown OAuth provider error".to_string()
     } else {
@@ -935,7 +936,10 @@ async fn read_request_head(stream: &mut tokio::net::TcpStream) -> Option<String>
         if head.len() >= buffer.len() {
             return Some(String::from_utf8_lossy(&head).to_string());
         }
-        let read = stream.read(&mut buffer).await.ok()?;
+        let read = tokio::time::timeout(Duration::from_secs(30), stream.read(&mut buffer))
+            .await
+            .ok()?
+            .ok()?;
         if read == 0 {
             return None;
         }
@@ -977,10 +981,16 @@ fn percent_decode(value: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
-                out.push(byte);
-                index += 3;
-                continue;
+            let hi = bytes[index + 1];
+            let lo = bytes[index + 2];
+            if (hi as char).is_ascii_hexdigit() && (lo as char).is_ascii_hexdigit() {
+                if let Ok(byte) =
+                    u8::from_str_radix(core::str::from_utf8(&[hi, lo]).unwrap_or(""), 16)
+                {
+                    out.push(byte);
+                    index += 3;
+                    continue;
+                }
             }
         }
         out.push(bytes[index]);
@@ -1582,5 +1592,19 @@ mod tests {
             sanitize_oauth_provider_error("   "),
             "unknown OAuth provider error"
         );
+    }
+
+    #[test]
+    fn percent_decode_safe_with_multibyte_utf8_and_hex() {
+        assert_eq!(percent_decode("a%€b"), "a%€b");
+        assert_eq!(percent_decode("a%41b"), "aAb");
+    }
+
+    #[test]
+    fn sanitize_oauth_provider_error_redacts_tokens_in_raw_text() {
+        let raw = "Error: ya29.a0AfH6SMCxyz token invalid";
+        let sanitized = sanitize_oauth_provider_error(raw);
+        assert!(!sanitized.contains("ya29."));
+        assert!(sanitized.contains("[redacted-access-token]"));
     }
 }

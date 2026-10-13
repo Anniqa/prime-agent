@@ -323,7 +323,7 @@ fn normalize_account(key: &str, raw: &Value) -> Option<StoredAccount> {
 }
 
 /// Merge two accounts representing the same identity.
-fn merge_stored_accounts(mut base: StoredAccount, mut other: StoredAccount) -> StoredAccount {
+fn merge_stored_accounts(mut base: StoredAccount, other: StoredAccount) -> StoredAccount {
     let other_is_newer = other.last_used_at > base.last_used_at;
 
     let (access, refresh, expires) = if other_is_newer {
@@ -394,9 +394,7 @@ fn are_same_identity(a: &StoredAccount, b: &StoredAccount) -> bool {
     });
 
     if let (Some(ea), Some(eb)) = (&email_a, &email_b) {
-        if ea == eb {
-            return true;
-        }
+        return ea == eb;
     }
     if !a.refresh.is_empty() && a.refresh == b.refresh {
         return true;
@@ -441,8 +439,9 @@ fn migrate_and_deduplicate_accounts(store: &mut AccountStore) -> bool {
 
         let mut current = acc;
         for m in matches {
-            alias_map.insert(m.account_id.clone(), current.account_id.clone());
+            let previous_id = m.account_id.clone();
             current = merge_stored_accounts(m, current);
+            alias_map.insert(previous_id, current.account_id.clone());
         }
 
         alias_map.insert(key, current.account_id.clone());
@@ -676,11 +675,14 @@ fn write_active_credential(
         Some(account) => {
             let mut entry = serde_json::Map::new();
             entry.insert("type".to_string(), Value::String("oauth".to_string()));
+            entry.insert(
+                "accountId".to_string(),
+                Value::String(account.account_id.clone()),
+            );
             if let Some(email) = &account.email {
                 // `email` is the TS key; `accountId` is the same value under
                 // `AuthCredential::Oauth`, so `pa-core` keeps its account id.
                 entry.insert("email".to_string(), Value::String(email.clone()));
-                entry.insert("accountId".to_string(), Value::String(email.clone()));
             }
             entry.insert("access".to_string(), Value::String(account.access.clone()));
             entry.insert(
@@ -723,17 +725,19 @@ fn sync_current_auth_in(dir: &Path) {
 
     let cred_email = normalized_email(credentials.email.as_deref());
     let existing = if cred_email.is_none() {
-        if let Some(active_id) = store.active_account_id.as_deref() {
-            if let Some(active_account) = store.accounts.get(active_id).cloned() {
-                Some(active_account)
-            } else {
-                find_account(&store, &credentials).cloned()
-            }
-        } else if store.accounts.len() == 1 {
-            store.accounts.values().next().cloned()
-        } else {
-            find_account(&store, &credentials).cloned()
-        }
+        find_account(&store, &credentials)
+            .cloned()
+            .or_else(|| {
+                store
+                    .active_account_id
+                    .as_deref()
+                    .and_then(|active_id| store.accounts.get(active_id).cloned())
+            })
+            .or_else(|| {
+                (store.accounts.len() == 1)
+                    .then(|| store.accounts.values().next().cloned())
+                    .flatten()
+            })
     } else {
         find_account(&store, &credentials).cloned()
     };
@@ -770,17 +774,19 @@ fn remember_account_in(dir: &Path, credentials: &AccountCredentials) -> StoredAc
 
     let cred_email = normalized_email(credentials.email.as_deref());
     let existing = if cred_email.is_none() {
-        if let Some(active_id) = store.active_account_id.as_deref() {
-            if let Some(active_account) = store.accounts.get(active_id).cloned() {
-                Some(active_account)
-            } else {
-                find_account(&store, credentials).cloned()
-            }
-        } else if store.accounts.len() == 1 {
-            store.accounts.values().next().cloned()
-        } else {
-            find_account(&store, credentials).cloned()
-        }
+        find_account(&store, credentials)
+            .cloned()
+            .or_else(|| {
+                store
+                    .active_account_id
+                    .as_deref()
+                    .and_then(|active_id| store.accounts.get(active_id).cloned())
+            })
+            .or_else(|| {
+                (store.accounts.len() == 1)
+                    .then(|| store.accounts.values().next().cloned())
+                    .flatten()
+            })
     } else {
         find_account(&store, credentials).cloned()
     };
@@ -1052,12 +1058,22 @@ pub async fn remove_account(
 /// Switch to the next stored account whose access token is not in
 /// `tried_access_tokens`, refreshing it and making it active. Used when
 /// Antigravity answers a hard quota wall (HTTP 429).
+pub async fn failover_to_next_account_with_dir(
+    http: &dyn ProviderHttp,
+    agent_dir: Option<&std::path::Path>,
+    tried_access_tokens: &[String],
+) -> Option<AccountApiKey> {
+    let dir = agent_dir
+        .map(std::path::Path::to_path_buf)
+        .or_else(agent_dir_or_none)?;
+    failover_to_next_account_in(http, &dir, tried_access_tokens).await
+}
+
 pub async fn failover_to_next_account(
     http: &dyn ProviderHttp,
     tried_access_tokens: &[String],
 ) -> Option<AccountApiKey> {
-    let dir = agent_dir_or_none()?;
-    failover_to_next_account_in(http, &dir, tried_access_tokens).await
+    failover_to_next_account_with_dir(http, None, tried_access_tokens).await
 }
 
 #[cfg(test)]
@@ -1379,7 +1395,10 @@ mod tests {
         );
         assert!(store_after.accounts.contains_key("user@example.com"));
         assert!(
-            !store_after.accounts.keys().any(|k| k.starts_with("account-")),
+            !store_after
+                .accounts
+                .keys()
+                .any(|k| k.starts_with("account-")),
             "must not contain synthetic account-<hash> keys"
         );
 
@@ -1466,7 +1485,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            load_account_store_in(dir.path()).active_account_id.as_deref(),
+            load_account_store_in(dir.path())
+                .active_account_id
+                .as_deref(),
             Some("first@example.com")
         );
 
@@ -1477,7 +1498,9 @@ mod tests {
             .expect("failover 1 should return next candidate");
         assert_eq!(next1.email.as_deref(), Some("second@example.com"));
         assert_eq!(
-            load_account_store_in(dir.path()).active_account_id.as_deref(),
+            load_account_store_in(dir.path())
+                .active_account_id
+                .as_deref(),
             Some("second@example.com")
         );
 
@@ -1491,7 +1514,9 @@ mod tests {
             .expect("failover 2 should return next candidate");
         assert_eq!(next2.email.as_deref(), Some("third@example.com"));
         assert_eq!(
-            load_account_store_in(dir.path()).active_account_id.as_deref(),
+            load_account_store_in(dir.path())
+                .active_account_id
+                .as_deref(),
             Some("third@example.com")
         );
 
@@ -1503,5 +1528,101 @@ mod tests {
         ];
         let next3 = failover_to_next_account_in(&NoHttp, dir.path(), &tried3).await;
         assert!(next3.is_none(), "no candidates remaining");
+    }
+
+    #[test]
+    fn migrate_and_deduplicate_preserves_active_account_with_aliased_duplicate() {
+        let mut store = empty_store();
+        let acc1 = StoredAccount {
+            account_id: "a@x.com".to_string(),
+            email: Some("a@x.com".to_string()),
+            access: "access-a".to_string(),
+            refresh: "refresh-shared".to_string(),
+            expires: 1000,
+            project_id: None,
+            added_at: 100,
+            last_used_at: 100,
+        };
+        let acc2 = StoredAccount {
+            account_id: "account-xyz".to_string(),
+            email: None,
+            access: "access-xyz".to_string(),
+            refresh: "refresh-shared".to_string(),
+            expires: 1000,
+            project_id: None,
+            added_at: 200,
+            last_used_at: 200,
+        };
+        store.accounts.insert("a@x.com".to_string(), acc1);
+        store.accounts.insert("account-xyz".to_string(), acc2);
+        store.active_account_id = Some("a@x.com".to_string());
+
+        migrate_and_deduplicate_accounts(&mut store);
+
+        assert_eq!(store.active_account_id.as_deref(), Some("a@x.com"));
+        assert_eq!(store.accounts.len(), 1);
+        assert!(store.accounts.contains_key("a@x.com"));
+    }
+
+    #[test]
+    fn sync_current_auth_without_email_matches_refresh_to_correct_account() {
+        let dir = TempDir::new("no-email-match-refresh");
+        remember_account_in(dir.path(), &account("b@example.com", "refresh-b"));
+        remember_account_in(dir.path(), &account("a@example.com", "refresh-a"));
+
+        let store_before = load_account_store_in(dir.path());
+        assert_eq!(
+            store_before.active_account_id.as_deref(),
+            Some("a@example.com")
+        );
+
+        // auth.json has credentials without email, but refresh matches account B
+        let auth = serde_json::json!({
+            "antigravity": {
+                "type": "oauth",
+                "access": "access-updated-b",
+                "refresh": "refresh-b",
+                "expires": now_ms() + 20 * 60_000,
+            },
+        });
+        std::fs::write(
+            auth_path(dir.path()),
+            serde_json::to_string_pretty(&auth).unwrap(),
+        )
+        .unwrap();
+
+        sync_current_auth_in(dir.path());
+
+        let store_after = load_account_store_in(dir.path());
+        assert_eq!(store_after.accounts.len(), 2, "no new entry created");
+        let acc_b = store_after.accounts.get("b@example.com").expect("b exists");
+        assert_eq!(acc_b.access, "access-updated-b");
+        let acc_a = store_after.accounts.get("a@example.com").expect("a exists");
+        assert_eq!(acc_a.access, "access-a@example.com");
+    }
+
+    #[test]
+    fn are_same_identity_different_email_same_refresh_returns_false() {
+        let a = StoredAccount {
+            account_id: "a@example.com".to_string(),
+            email: Some("a@example.com".to_string()),
+            access: "acc-a".to_string(),
+            refresh: "same-refresh".to_string(),
+            expires: 1000,
+            project_id: None,
+            added_at: 100,
+            last_used_at: 100,
+        };
+        let b = StoredAccount {
+            account_id: "b@example.com".to_string(),
+            email: Some("b@example.com".to_string()),
+            access: "acc-b".to_string(),
+            refresh: "same-refresh".to_string(),
+            expires: 1000,
+            project_id: None,
+            added_at: 200,
+            last_used_at: 200,
+        };
+        assert!(!are_same_identity(&a, &b));
     }
 }

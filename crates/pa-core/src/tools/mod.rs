@@ -30,7 +30,6 @@ pub(crate) mod tool_definition;
 #[allow(dead_code)] // util module; fully exercised by unit + golden tests
 pub(crate) mod truncate;
 
-
 /// The optional Antigravity model tools (`google_search`, `generate_image`), bridged for the
 /// agent runtime and filtered by the extension's extra-tool toggles
 /// (`ANTIGRAVITY_NO_EXTRA_TOOLS` / `ANTIGRAVITY_NO_<TOOL>_TOOL`). Hosts (the daemon worker and
@@ -55,7 +54,12 @@ pub fn antigravity_agent_tools(
     if antigravity_image_tool::is_image_tool_enabled() {
         let context = antigravity_image_tool::AntigravityImageToolContext {
             cwd: cwd.map_or_else(
-                || ".".to_string(),
+                || {
+                    std::env::current_dir().map_or_else(
+                        |_| ".".to_string(),
+                        |dir| dir.to_string_lossy().into_owned(),
+                    )
+                },
                 |dir| dir.to_string_lossy().into_owned(),
             ),
             agent_dir: agent_dir.map(std::path::Path::to_path_buf),
