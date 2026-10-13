@@ -193,12 +193,15 @@ jobs:
           EOF
 
           cd release-files
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          # The publish job has no checkout, so name the repo explicitly:
+          # `gh` otherwise tries to read a git remote and fails.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG exists; uploading assets..."
-            gh release upload "$TAG" ./* --clobber
+            gh release upload "$TAG" ./* --clobber --repo "$GITHUB_REPOSITORY"
           else
             echo "Creating release $TAG..."
             gh release create "$TAG" ./* \
+              --repo "$GITHUB_REPOSITORY" \
               --title "Prime Agent $TAG" \
               --notes-file ../notes.md
           fi
